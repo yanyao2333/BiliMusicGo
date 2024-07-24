@@ -13,6 +13,6 @@ func Logger() *zap.SugaredLogger {
 
 func main() {
 	logger := Logger()
-	bili := BiliListenerStruct{BiliClient: bilibili.New(), logger: logger}
+	bili := BiliMonitorStruct{BiliClient: bilibili.New(), logger: logger}
 	bili.InitListener()
 }

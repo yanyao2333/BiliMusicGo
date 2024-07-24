@@ -11,7 +11,13 @@ type FavourContent struct {
 	Bvid string // 视频才有的bv号
 }
 
-type BiliListenerStruct struct {
+type LocalFavourContent struct {
+	FavourContent
+	FilePath       string
+	FavourFolderId int // 所在远端收藏夹的id
+}
+
+type BiliMonitorStruct struct {
 	BiliClient       *bilibili.Client
 	logger           *zap.SugaredLogger
 	UserInfo         *bilibili.AccountInformation
@@ -24,13 +30,11 @@ type BiliListenerStruct struct {
 		FavState   int    `json:"fav_state"`
 		MediaCount int    `json:"media_count"`
 	}
+	DB         DB
+	Downloader Downloader
 }
 
 type FavourContents []FavourContent
 
-// LocalFavourMusicRecordStruct 本地储存的json文件中单个记录对象（我听不懂我在写什么...）
-type LocalFavourMusicRecordStruct struct {
-	Id       int    `json:"id"`     // 内容id，视频稿件：视频稿件avid，音频：音频auid，视频合集：视频合集id
-	Status   string `json:"status"` // 状态，saved|removed|error (已保存在本地|之前同步过了，但被用户删除/重命名/移动，不会再次同步|我不知道，预留的)
-	FilePath string `json:"file_path"`
+type BiliMusicDBStruct struct {
 }

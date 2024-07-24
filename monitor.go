@@ -1,20 +1,22 @@
 package main
 
 import (
+	"fmt"
 	"github.com/CuteReimu/bilibili/v2"
 	"os"
 	"strings"
 )
 
-// BiliListener 监听模块
-type BiliListener interface {
+// BiliMonitor 监听模块
+type BiliMonitor interface {
 	InitListener()
 	GetTargetFavourFolders()
 	LoginByQRCode() bool
 	GetFavourFolderContents(folderId int) FavourContents
 }
 
-func (b *BiliListenerStruct) LoginByQRCode() bool {
+// LoginByQRCode 扫码登录
+func (b *BiliMonitorStruct) LoginByQRCode() error {
 	qrCode, _ := b.BiliClient.GetQRCode()
 	qrCode.Print()
 	result, err := b.BiliClient.LoginWithQRCode(bilibili.LoginWithQRCodeParam{
@@ -30,31 +32,29 @@ func (b *BiliListenerStruct) LoginByQRCode() bool {
 	if _, err := os.Stat("./configs"); os.IsNotExist(err) {
 		err := os.MkdirAll("./configs", os.ModePerm)
 		if err != nil {
-			b.logger.Errorf("创建 ./configs 文件夹失败！报错：%v", err)
-			return false
+			return fmt.Errorf("创建 ./configs 文件夹失败！报错：%w", err)
 		}
 		b.logger.Debug("创建./configs文件夹成功！")
 	}
 
 	err = os.WriteFile("./configs/cookies.txt", []byte(cookiesString), os.ModePerm)
 	if err != nil {
-		b.logger.Errorf("写入文件失败：%v", err)
-		return false
+		return fmt.Errorf("写入文件失败：%w", err)
 	}
 	b.logger.Debug("写入cookies成功！")
-	return true
+	return nil
 }
 
 // InitListener 初始化监听器
-func (b *BiliListenerStruct) InitListener() {
+func (b *BiliMonitorStruct) InitListener() {
 	b.BiliClient.Resty().SetLogger(b.logger)
 	b.logger.Info("开始初始化收藏夹监听模块")
 	b.logger.Debug("尝试获取./configs/cookies.txt以登录b站")
 	cookies, err := os.ReadFile("./configs/cookies.txt")
 	if err != nil {
 		b.logger.Info("读取cookie文件失败，开始执行扫码登录流程！")
-		res := b.LoginByQRCode()
-		if !res {
+		err := b.LoginByQRCode()
+		if err != nil {
 			b.logger.Panic("登录时出现了问题！程序退出！")
 		}
 	} else {
@@ -65,8 +65,8 @@ func (b *BiliListenerStruct) InitListener() {
 	if err != nil {
 		if strings.Contains(err.Error(), "-101") {
 			b.logger.Info("登录失效，重新开始扫码登录流程！")
-			res := b.LoginByQRCode()
-			if !res {
+			err := b.LoginByQRCode()
+			if err != nil {
 				b.logger.Panic("登录时出现了问题！程序退出！")
 			}
 			info, err = b.BiliClient.GetAccountInformation()
@@ -82,13 +82,12 @@ func (b *BiliListenerStruct) InitListener() {
 	b.logger.Info(b.UserInfo.Uname, "，欢迎回来！")
 	b.logger.Info("开始查询并筛选需要监听的收藏夹")
 	b.GetTargetFavourFolders()
-	b.logger.Debugf("%+v", b.FavourFolderList)
 	b.logger.Info("初始化完成！开始启动监听！")
 	b.GetFavourFolderContents((*b.FavourFolderList)[0].Id)
 }
 
-// GetTargetFavourFolders 获取用户的收藏夹列表，并根据规则剔除掉一些（收藏夹标题包含[nf]，即no follow标记）
-func (b *BiliListenerStruct) GetTargetFavourFolders() {
+// GetTargetFavourFolders 获取用户的收藏夹列表，只监听收藏夹包含[em]的(意为enable monitor)
+func (b *BiliMonitorStruct) GetTargetFavourFolders() {
 	info, err := b.BiliClient.GetAllFavourFolderInfo(bilibili.GetAllFavourFolderInfoParam{
 		UpMid: b.UserInfo.Mid,
 	})
@@ -105,10 +104,9 @@ func (b *BiliListenerStruct) GetTargetFavourFolders() {
 		MediaCount int    `json:"media_count"`
 	}
 	for _, folder := range info.List {
-		if !strings.Contains(folder.Title, "[nf]") {
+		if strings.Contains(folder.Title, "[em]") {
+			b.logger.Debugf("在「%v」中检测到[em]标签，监听此文件夹", folder.Title)
 			newFolderList = append(newFolderList, folder)
-		} else {
-			b.logger.Debugf("在「%v」中检测到[nf]标签，停止监听此文件夹！", folder.Title)
 		}
 	}
 	b.logger.Debugf("筛选后剩余的收藏夹有%v个", len(newFolderList))
@@ -116,7 +114,7 @@ func (b *BiliListenerStruct) GetTargetFavourFolders() {
 }
 
 // GetFavourFolderContents 获取某个收藏夹内的收藏内容
-func (b *BiliListenerStruct) GetFavourFolderContents(folderId int) FavourContents {
+func (b *BiliMonitorStruct) GetFavourFolderContents(folderId int) FavourContents {
 	res, err := b.BiliClient.GetFavourIds(bilibili.GetFavourIdsParam{
 		MediaId: folderId,
 	})
@@ -136,8 +134,8 @@ func (b *BiliListenerStruct) GetFavourFolderContents(folderId int) FavourContent
 	return favours
 }
 
-// InitLocalFolder 初始化本地对应的收藏文件夹，可以选择是否全量同步一次bilibili端内容
-func (b *BiliListenerStruct) InitLocalFolder(targetDir string, folderId int, doFullSync bool) bool {
+// InitLocalFolder 初始化本地对应的收藏文件夹
+func (b *BiliMonitorStruct) InitLocalFolder(targetDir string, folderId int) bool {
 	if _, err := os.Stat(targetDir); os.IsNotExist(err) {
 		err = os.MkdirAll(targetDir, os.ModePerm)
 		if err != nil {
@@ -147,8 +145,87 @@ func (b *BiliListenerStruct) InitLocalFolder(targetDir string, folderId int, doF
 	}
 	favours := b.GetFavourFolderContents(folderId)
 	if favours == nil {
-		b.logger.Debugf("favours是nil，但上层函数已经打印过log了，这里直接跳过处理返回false")
 		return false
 	}
 	return true
+}
+
+func (b *BiliMonitorStruct) StartMonitor() {
+	b.logger.Debug("启动监听")
+
+}
+
+func calculateDiff(local []LocalFavourContent, remote []FavourContent) (toDelete []LocalFavourContent, toDownload []FavourContent) {
+	remoteMap := make(map[int]FavourContent)
+	for _, file := range remote {
+		remoteMap[file.Id] = file
+	}
+
+	for _, localFile := range local {
+		if _, exists := remoteMap[localFile.Id]; !exists {
+			toDelete = append(toDelete, localFile)
+		} else {
+			delete(remoteMap, localFile.Id)
+		}
+	}
+
+	for _, file := range remoteMap {
+		toDownload = append(toDownload, file)
+	}
+
+	return toDelete, toDownload
+}
+
+func (b *BiliMonitorStruct) DeleteLocalFavour(content LocalFavourContent) error {
+	err := b.DB.DeleteLocalFavour(content)
+	if err != nil {
+		return fmt.Errorf("在数据库中删除 id: %v 时出错: %w", content.Id, err)
+	}
+	err = os.Remove(content.FilePath)
+	if err != nil {
+		return fmt.Errorf("删除文件: %v 时出错: %w", content.FilePath, err)
+	}
+	return nil
+}
+
+func (b *BiliMonitorStruct) GetDownloadUrl(content FavourContent) (url string, err error) {
+	return "", err
+}
+
+func (b *BiliMonitorStruct) AddLocalFavour(content FavourContent) error {
+	err := b.DB.AddLocalFavour(content)
+	if err != nil {
+		return fmt.Errorf("向数据库中添加新的内容失败: %w", err)
+	}
+	url, err := b.GetDownloadUrl(content)
+	if err != nil {
+		return fmt.Errorf("获取 %v 对应的下载链接失败: %s", content.Id, err)
+	}
+	err = b.Downloader.CreateDownloadTask(url)
+	if err != nil {
+		return fmt.Errorf("创建 %v 的下载任务失败: %s", content.Id, err)
+	}
+	return nil
+}
+
+func (b *BiliMonitorStruct) SyncOneFavourFolder(folderId int, targetDir string) error {
+	remoteContents := b.GetFavourFolderContents(folderId)
+	localFavourContents, err := b.DB.GetLocalFolderContents(folderId)
+	if err != nil {
+		return fmt.Errorf("获取数据库中已有内容失败: %s", err)
+	}
+	toDelete, toDownload := calculateDiff(localFavourContents, remoteContents)
+	for _, content := range toDelete {
+		err := b.DeleteLocalFavour(content)
+		if err != nil {
+			b.logger.Errorf("[sync]在同步删除本地内容时出现错误: %s", err)
+		}
+	}
+	for _, content := range toDownload {
+		err = b.AddLocalFavour(content)
+		if err != nil {
+			b.logger.Errorf("[sync]在同步下载本地内容时出现错误: %s", err)
+		}
+	}
+	return nil
 }
