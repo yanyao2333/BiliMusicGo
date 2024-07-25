@@ -11,8 +11,13 @@ import (
 type BiliMonitor interface {
 	InitListener()
 	GetTargetFavourFolders()
-	LoginByQRCode() bool
+	LoginByQRCode() error
+	SyncOneFavourFolder(folderId int, targetDir string) error
 	GetFavourFolderContents(folderId int) FavourContents
+	InitLocalFolder(targetDir string, folderId int) error
+	StartMonitor()
+	DeleteLocalFavour(content LocalFavourContent) error
+	AddLocalFavour(content FavourContent) error
 }
 
 // LoginByQRCode 扫码登录
@@ -48,6 +53,13 @@ func (b *BiliMonitorStruct) LoginByQRCode() error {
 // InitListener 初始化监听器
 func (b *BiliMonitorStruct) InitListener() {
 	b.BiliClient.Resty().SetLogger(b.logger)
+	if _, err := os.Stat("./tmp"); os.IsNotExist(err) {
+		err := os.MkdirAll("./tmp", os.ModePerm)
+		if err != nil {
+			b.logger.Errorf("创建 ./tmp 文件夹失败！报错：%s", err)
+		}
+		b.logger.Debug("创建 ./tmp 文件夹成功！")
+	}
 	b.logger.Info("开始初始化收藏夹监听模块")
 	b.logger.Debug("尝试获取./configs/cookies.txt以登录b站")
 	cookies, err := os.ReadFile("./configs/cookies.txt")
@@ -135,19 +147,19 @@ func (b *BiliMonitorStruct) GetFavourFolderContents(folderId int) FavourContents
 }
 
 // InitLocalFolder 初始化本地对应的收藏文件夹
-func (b *BiliMonitorStruct) InitLocalFolder(targetDir string, folderId int) bool {
+func (b *BiliMonitorStruct) InitLocalFolder(targetDir string, folderId int) error {
 	if _, err := os.Stat(targetDir); os.IsNotExist(err) {
 		err = os.MkdirAll(targetDir, os.ModePerm)
 		if err != nil {
-			b.logger.Warnf("在创建文件夹「%v」时出现错误：%v", targetDir, err)
-			return false
+			return fmt.Errorf("在创建文件夹「%v」时出现错误：%w", targetDir, err)
 		}
 	}
 	favours := b.GetFavourFolderContents(folderId)
 	if favours == nil {
-		return false
+
+		return nil
 	}
-	return true
+	return nil
 }
 
 func (b *BiliMonitorStruct) StartMonitor() {
@@ -188,23 +200,29 @@ func (b *BiliMonitorStruct) DeleteLocalFavour(content LocalFavourContent) error 
 	return nil
 }
 
-func (b *BiliMonitorStruct) GetDownloadUrl(content FavourContent) (url string, err error) {
+// GetMusicDownloadUrl 返回当前账号权限下该音频的最高品质下载链接
+func (b *BiliMonitorStruct) GetMusicDownloadUrl(content FavourContent) (url string, err error) {
+	// TODO 等上游依赖库更新相关接口
 	return "", err
 }
 
-func (b *BiliMonitorStruct) AddLocalFavour(content FavourContent) error {
+// AddLocalFavour 添加一个内容到本地
+func (b *BiliMonitorStruct) AddLocalFavour(content FavourContent, targetDir string, favourFolderId int) error {
+	b.logger.Infof("开始同步内容 %v 到本地", content.Id)
 	err := b.DB.AddLocalFavour(content)
 	if err != nil {
-		return fmt.Errorf("向数据库中添加新的内容失败: %w", err)
+		return fmt.Errorf("向数据库中添加新的内容条目失败: %w", err)
 	}
-	url, err := b.GetDownloadUrl(content)
+	url, err := b.GetMusicDownloadUrl(content)
 	if err != nil {
-		return fmt.Errorf("获取 %v 对应的下载链接失败: %s", content.Id, err)
+		return fmt.Errorf("获取 %v 对应的下载链接失败: %w", content.Id, err)
 	}
-	err = b.Downloader.CreateDownloadTask(url)
-	if err != nil {
-		return fmt.Errorf("创建 %v 的下载任务失败: %s", content.Id, err)
-	}
+	b.logger.Debugf("创建下载任务到 [./tmp/%v_%v.m4a] 下", content.Id, favourFolderId)
+	b.Downloader.AddTask(Task{
+		URL:      url,
+		FileName: fmt.Sprintf("./tmp/%v_%v.m4a", content.Id, favourFolderId),
+		DstDir:   targetDir,
+	})
 	return nil
 }
 
@@ -222,10 +240,21 @@ func (b *BiliMonitorStruct) SyncOneFavourFolder(folderId int, targetDir string) 
 		}
 	}
 	for _, content := range toDownload {
-		err = b.AddLocalFavour(content)
+		err = b.AddLocalFavour(content, targetDir, folderId)
 		if err != nil {
 			b.logger.Errorf("[sync]在同步下载本地内容时出现错误: %s", err)
 		}
 	}
 	return nil
+}
+
+// HandleDownloadResults 处理下载结果
+func HandleDownloadResults(results <-chan Result) {
+	for result := range results {
+		if result.Err != nil {
+			fmt.Printf("Failed to download: %s. Error: %v\n", result.Task.URL, result.Err)
+		} else {
+			fmt.Printf("Successfully downloaded: %s to %s\n", result.Task.URL, result.Task.FileName)
+		}
+	}
 }

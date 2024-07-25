@@ -32,6 +32,9 @@ type BiliMonitorStruct struct {
 	}
 	DB         DB
 	Downloader Downloader
+
+	// Channels
+
 }
 
 type FavourContents []FavourContent
